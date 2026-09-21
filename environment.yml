@@ -1,0 +1,45 @@
+# Conda environment for the geospatial stack. GDAL/rasterio/pyproj are much
+# more reliably installed via conda-forge than pip on Windows.
+#
+# Usage:
+#   conda env create -f environment.yml
+#   conda activate glacier-fsnow-unet
+#   pip install -r requirements-torch.txt
+#   pip install -e .
+name: glacier-fsnow-unet
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - gdal>=3.7
+  - rasterio>=1.3
+  - rioxarray>=0.15
+  - xarray>=2023.6
+  - geopandas>=0.14
+  - shapely>=2.0
+  - pyproj>=3.6
+  - affine>=2.4
+  # zarr 3.x replaced the numcodecs.Blosc(...) compressor-object API used
+  # directly in scenes/zarr_store.py with a new config-based codec pipeline;
+  # pinned <3 until that call site is ported to the v3 codec API.
+  - zarr>=2.16,<3
+  - numcodecs>=0.12
+  - numpy>=1.24
+  - pandas>=2.0
+  # pandas' to_parquet/read_parquet need an engine at runtime; pandas itself
+  # does not pull one in as a dependency. The registry, stats, coastline, and
+  # feature-merge stages all read/write Parquet, so this is load-bearing.
+  # On Windows, importing rasterio before pyarrow can break pyarrow's native
+  # extensions via DLL search-order conflicts; tests/conftest.py works around
+  # this by importing pyarrow first, before any test module loads rasterio.
+  - pyarrow>=14.0
+  - scipy>=1.11
+  - joblib>=1.3
+  - pyyaml>=6.0
+  - tqdm>=4.65
+  - pytest>=7.4
+  - pip
+  - pip:
+      - python-dotenv>=1.0
+      - pydantic>=2.5
+      - polars>=0.20

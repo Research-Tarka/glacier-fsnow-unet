@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the preprint below and the Zenodo archive."
+type: software
+title: "glacier-fsnow-unet"
+abstract: >
+  Data pipeline for building a 1984-2025 glacier surface time series and
+  end-of-season snow-fraction (F_snow) record from optical satellite
+  imagery, developed for the paper "Benchmarked and leakage-validated
+  deep-learning glacier segmentation: a 42-year, five-sensor snow-fraction
+  record for western North America". Given a set of glacier outlines (RGI),
+  the pipeline downloads a DEM and every available Landsat 5/7/8/9 and
+  Sentinel-2 scene over the study period, trains a 4-class U-Net (Snow / Ice /
+  Cloud / Other) to segment each scene, and derives from it, per glacier and
+  per year, the reference glacier surface and its snow fraction.
+authors:
+  - family-names: "Tarka"
+    given-names: "Maxime"
+    email: "maxime.tarka@gmail.com"
+license: MIT
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22311127
+    description: "Zenodo archive of this repository, its released model checkpoints, and data."
+preferred-citation:
+  type: article
+  title: "Benchmarked and leakage-validated deep-learning glacier segmentation: a 42-year, five-sensor snow-fraction record for western North America"
+  authors:
+    - family-names: "Tarka"
+      given-names: "Maxime"
+      email: "maxime.tarka@gmail.com"
+    - family-names: "Baraër"
+      given-names: "Michel"
+    - family-names: "Aubry-Wake"
+      given-names: "Caroline"
+  date-released: "2026-09-21"
+  identifiers:
+    - type: doi
+      value: "10.2139/ssrn.7418104"
+  url: "https://ssrn.com/abstract=7418104"

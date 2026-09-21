@@ -1,0 +1,455 @@
+# ----------------------------------------------------------------------
+# glacier-fsnow-unet — example configuration
+#
+# Copy this file (e.g. to configs/config.yaml), fill in the CHANGE_ME and
+# dollar-brace-VAR placeholders, and point the pipeline at it via --config or
+# the GLACIER_FSNOW_CONFIG environment variable. dollar-brace-VAR placeholders
+# are substituted from the environment or a .env file (see .env.example).
+#
+# Every value below (other than the paths) is a real hyperparameter used
+# in the production run described in the paper — keep them as the
+# default unless you are deliberately re-tuning.
+# ----------------------------------------------------------------------
+
+# ----------------------------------------------------------------------
+# Paths
+# All of these must be set to real locations on your machine (or left as
+# CHANGE_ME to fail loudly). None of these are pipeline parameters.
+# ----------------------------------------------------------------------
+paths:
+  data_root: ${DATA_ROOT}                # root for downloaded raw data (glaciers, DEM, scenes)
+  output_root: ${OUTPUT_ROOT}             # root for pipeline outputs (inference maps, stats, SGV)
+  model_root: ${MODEL_ROOT}               # root for trained model checkpoints
+  train_root: CHANGE_ME                   # training data root (patches, npz)
+  apply_root: CHANGE_ME                   # inference application data root
+  model_train_root: CHANGE_ME             # where training runs write checkpoints/logs
+  model_inference_root: CHANGE_ME         # model checkpoint(s) used for inference
+  published_root: CHANGE_ME               # final published results root
+  zenodo_train_data_root: CHANGE_ME       # published UNet_Train_Data corpus (read-only); see scripts/05a_build_train_cache_from_zenodo.py
+
+# ----------------------------------------------------------------------
+# Isolated glacier filter (RGI selection)
+# ----------------------------------------------------------------------
+isolated_glacier:
+  rgi_shapefiles:
+    - CHANGE_ME  # e.g. path to RGI2000-v7.0-G-01_alaska.shp
+    - CHANGE_ME  # e.g. path to RGI2000-v7.0-G-02_western_canada_usa.shp
+  output_json: CHANGE_ME
+  output_named_json: CHANGE_ME
+  output_root: CHANGE_ME
+  # Minimum admissible glacier area (km^2), ~111 pixels at 30 m resolution.
+  min_area_km2: 0.05
+
+# ----------------------------------------------------------------------
+# DEM
+# ArcticDEM via direct STAC/COG access (pystac-client + rasterio/rioxarray
+# windowed reads), Copernicus DEM GLO-30 as fallback. Does NOT use
+# pdemtools (known broken / dependency-conflict-prone).
+# See docs/decisions/dem_backend.md.
+#
+# arctic_dem_stac_url must be the PGC STAC *API* root. The older static
+# S3 catalog.json is no longer published (returns NoSuchKey).
+# ArcticDEM v4.1 verified current against the live catalog: the available
+# mosaic collections are v3.0 and v4.1 only.
+# ----------------------------------------------------------------------
+dem:
+  input_root: CHANGE_ME
+  glacier_dem_root: CHANGE_ME
+  glacier_input_root: CHANGE_ME
+  arctic_dem_stac_url: "https://stac.pgc.umn.edu/api/v1"
+  copernicus_fallback: true
+  max_workers: 8
+
+# ----------------------------------------------------------------------
+# Scene download (Google Earth Engine)
+# ----------------------------------------------------------------------
+scene_download:
+  # One entry per parallel GEE project/output split. Extend/shrink this
+  # list to match how many splits you actually run.
+  splits:
+    - root: CHANGE_ME
+      ee_project: CHANGE_ME
+  ee_project_default: CHANGE_ME
+
+  max_cloud_fraction: 0.30      # max cloud fraction over the glacier AOI (0.0-1.0)
+  min_aoi_coverage: 0.70        # min AOI coverage fraction to accept a scene
+  download_workers: 4           # parallel workers per glacier (scenes in ///)
+  glacier_workers: 1            # glaciers processed in parallel per split
+  max_scenes_per_year: 9999     # default = unlimited (all available images)
+  skip_landsat7_2003_2012: true # skip Landsat 7 SLC-off-affected years
+
+  drive_export:
+    enabled: false
+    folder: "GEE_Glacier_Exports"
+    max_tasks: 2000              # concurrent GEE tasks max (GEE hard limit = 3000)
+
+# ----------------------------------------------------------------------
+# Climate / environmental features
+# Only the 5 sources actually active in production are ported.
+# ----------------------------------------------------------------------
+features:
+  # Number of (source, year) work units run concurrently, round-robined across
+  # scene_download.splits' GEE projects. 1 = sequential, single-project
+  # (safe default). Set >1 once multiple GEE projects are configured above.
+  max_workers: 1
+  sources:
+    - ERA5_Land
+    - ERA5_Reanalysis_CDS
+    - TerraClimate
+    - Daymet_V4
+    - MERRA2_Aerosols
+  spectral_indices:
+    - Index_NDVI
+    - Index_NDSI
+    - Index_NDWI_GAO
+    - Index_NBR
+    - Index_ND_SWIR1_SWIR2
+    - Index_ND_BLUE_RED
+    - Index_ND_BLUE_NIR
+    - Index_ND_GREEN_RED
+    - Index_r
+    - Index_g
+    - Index_b
+
+# ----------------------------------------------------------------------
+# Data split
+# ----------------------------------------------------------------------
+split:
+  split_glacier: true            # true: prevents a glacier from appearing in >1 split
+  split_by_sensor: true
+  glacier_size_stratify: true    # true: balances large/small glaciers across train/val/test
+  class_density_balance: false
+  class_density_min_expected_ratio: 0.6
+  class_density_max_moves: 20
+  val_ratio: 0.20
+  test_ratio: 0.10
+  force_rebuild_npz: true
+
+# ----------------------------------------------------------------------
+# Model
+# U-Net, 4 levels, channels 48->96->192->384->768, patch 48x48, stride 16
+# (training) / 50% overlap (inference).
+# ----------------------------------------------------------------------
+model:
+  strategy: mono
+  mono_common_mode: true
+  type: unet
+  device: cuda
+  base_channels: 48
+
+  # --- optional architecture variants ------------------------------------
+  # Every value below is the REFERENCE setting: together they build exactly
+  # the architecture the published checkpoint's weights load into, with zero
+  # missing or unexpected keys. Each is a post-publication experiment, off
+  # unless deliberately switched on, and switching any of them on produces a
+  # model that is no longer the published one.
+  # See docs/decisions/architecture_experiments.md for what each does and
+  # what a short real-data comparison measured.
+
+  norm_type: batch    # reference: matches the published checkpoint's BatchNorm parameters
+                      # "group" swaps in GroupNorm (16 channels per group, so
+                      # 3/6/12/24 groups at base_channels 48). Batch-independent
+                      # and keeps no running statistics. Unsupported together
+                      # with per-sensor banks (mono_common_mode: false).
+
+  bottleneck_attention: false        # reference: the bottleneck is purely convolutional
+                                     # true adds multi-head self-attention over the
+                                     # bottleneck grid (6x6 at patch_size 48)
+  bottleneck_attention_heads: 8      # only read when bottleneck_attention is true
+
+  deep_supervision: false            # reference: one logit head, at full resolution
+                                     # true adds auxiliary heads on the two
+                                     # intermediate decoder levels, each scored
+                                     # against labels reduced to its own resolution
+
+# ----------------------------------------------------------------------
+# Train
+# ----------------------------------------------------------------------
+train:
+  lr: 0.00042607242544092326
+  patch_size: 48
+  stride: 16
+  batch_size: 96
+  epochs: 500
+  patience: 15
+  min_valid: 5
+  num_workers: 8
+  weight_decay: 5.3010972865943284e-05
+  dropout_p: 0.08507918967907807
+  scheduler_min_lr: 0.00001
+  rotations: false
+
+# ----------------------------------------------------------------------
+# Cross-validation (k-fold)
+# cv_by_glacier: true is mandatory to avoid leakage when cv_enabled: true.
+# WARNING: cv_folds: 5 multiplies training time by 5.
+# ----------------------------------------------------------------------
+cross_validation:
+  enabled: false
+  folds: 2
+  by_glacier: true
+  seed: 42
+
+# ----------------------------------------------------------------------
+# Multi-seed ensemble (bootstrap)
+# ----------------------------------------------------------------------
+bootstrap:
+  enabled: true
+  n_seeds: 5
+  seed_base: 0
+  create_ensemble: true          # average softmax across seeds into ensemble/model.pt
+
+# ----------------------------------------------------------------------
+# HPO (Optuna)
+# trials: 0 -> single run with fixed hyperparameters (fast, recommended for production)
+# trials: N -> N Optuna (TPE) trials + 1 final run with the best hyperparameters
+# ----------------------------------------------------------------------
+hpo:
+  trials: 0
+  trial_epochs: 25               # 0 = full epochs per trial (slow but precise)
+  sampler: tpe                   # tpe | random | cmaes
+  pruner: none                   # none | median | hyperband
+  storage: null                  # null (in-memory) | "sqlite:///hpo.db" (persistent)
+  # Search space used when trials > 0. Structural HPs (base_channels, patch_size,
+  # stride, batch_size) are frozen at the historically most robust configuration;
+  # Optuna only refines continuous HPs, centered on the best historical run.
+  search_space:
+    lr:
+      type: log_uniform
+      bounds: [0.0003, 0.003]
+    weight_decay:
+      type: log_uniform
+      bounds: [0.00001, 0.003]
+    dropout_p:
+      type: uniform
+      bounds: [0.05, 0.35]
+
+# ----------------------------------------------------------------------
+# Metrics / loss
+# ----------------------------------------------------------------------
+metrics_loss:
+  main_iou_metric: miou_macro
+  compute_boundary_metrics: false
+  ignore_boundary: 0    # 0: keep the boundary band (matches the published model)
+  # Penalty weights for the confusion-aware loss term (0 = no extra penalty).
+  penalty_other_when_not_other: 0
+  penalty_ice_instead_of_snow: 0
+  penalty_snow_instead_of_ice: 0
+  penalty_other_instead_of_ice: 10
+  penalty_other_instead_of_cloud: 0
+  penalty_cloud_instead_of_other: 0
+  penalty_cloud_instead_of_snow: 0
+  penalty_cloud_instead_of_ice: 0
+  cloud_dem_independence_lambda: 0
+  # Post-run diagnostics. These change what a finished run writes out, never
+  # how it trains, so they are safe to change without invalidating a
+  # comparison against the published model.
+  worst_case_count: 20   # rows per split in worst_scenes.csv / worst_glaciers.csv (0 = skip)
+  calibration_bins: 10   # softmax-confidence bins in calibration_<split>.csv
+
+# ----------------------------------------------------------------------
+# Context / sensor adaptation
+# ----------------------------------------------------------------------
+context:
+  use_spatial_features: false
+  use_temporal_features: false
+  use_area_feature: false
+
+# ----------------------------------------------------------------------
+# Inference
+# ----------------------------------------------------------------------
+inference:
+  patch_size: 48
+  stride: 16                     # same stride as training; ~67% overlap, not 50%
+  batch_size: 384
+  cpu_threads: 12
+  max_workers: 8
+  max_workers_apply: 8
+  torch_compile: true
+  torch_compile_mode: max-autotune
+  overwrite: false
+  scene_precheck_min_valid_ratio: 0.30
+
+# ----------------------------------------------------------------------
+# Boundary post-process
+# ----------------------------------------------------------------------
+boundary_postprocess:
+  max_chain_length: 0            # 0 = disabled
+  search_radius: 4
+  min_chain_length: 0            # 0 = disabled
+  propagate: false
+  propagate_max_iterations: 20
+
+# ----------------------------------------------------------------------
+# Map / SGV (glacier state vector) / stats
+# ----------------------------------------------------------------------
+map_sgv_stats:
+  map_etat_overwrite: true
+  sgv_overwrite: true
+  map_etat_max_scene_cloud_frac: 1.0
+  map_etat_min_scene_threshold_from_2013: 2
+  map_etat_min_scene_threshold_before_2013: 2
+  map_etat_max_workers: 20
+
+  sgv_rgi_shapefiles:
+    - CHANGE_ME
+    - CHANGE_ME
+  # The four VGS criteria (paper Section 4.7). Criterion 1 (primary
+  # 8-connected component intersecting the RGI polygon) is structural.
+  sgv_ref_min_glacier_coverage_pct: 70.0   # criterion 2: min % Snow+Ice within the RGI polygon
+  sgv_ref_max_overshoot_pct: 50.0          # criterion 3: max % over the RGI area (50% = the paper's 1.5x)
+  sgv_ref_connectivity_tolerance: 0        # connectivity tolerance in pixels (0 = strict 8-neighborhood)
+  sgv_ref_max_cloud_pct: 10.0              # criterion 4: max % cloud to keep a year (paper: <= 10%)
+
+  emprise_generate_etat: true
+  emprise_generate_3d_html: false
+  emprise_generate_3d_package: true
+  emprise_generate_3d_rgb: true
+
+  stats_process_etat: true
+  stats_process_physic: false
+
+# ----------------------------------------------------------------------
+# Feature importance / SHAP
+# ----------------------------------------------------------------------
+feature_importance:
+  enabled: true
+  metric: main
+  split: valid
+  max_batches: 0
+  context: true
+  num_workers: 0
+
+# ----------------------------------------------------------------------
+# U-Net interpretation, stage 06 (analyst-run, not part of a production run)
+#
+# Four independent analyses, each with its own `enabled` flag and its own
+# settings. scripts/06_interpret_model.py reads these flags and logs every
+# analysis it skips, so a disabled section is visible in the run output
+# rather than silently absent.
+# ----------------------------------------------------------------------
+unet_interpretation:
+  output_dirname: "interpretation"
+
+  # Calibrates the P(top1)-P(top2) gap below which the Cloud > Snow > Ice >
+  # Other priority rule overrides a plain argmax. Writes
+  # ambiguity_threshold.json, which scripts/07_run_inference.py picks up
+  # automatically when it sits next to the checkpoint.
+  ambiguity:
+    enabled: true
+    split: valid
+    tolerance: 0.01              # max macro-mIoU degradation the rule may cost
+    max_scenes: 0                # 0 = every scene of the partition
+    threshold_sweep_max: 0.50
+    threshold_sweep_steps: 201
+    batch_size: 8
+
+  # Permutation importance over the 11 input bands. One evaluation pass per
+  # band, so max_batches is the knob that bounds its cost.
+  feature_importance:
+    enabled: true
+    split: valid
+    max_batches: 0               # 0 = whole partition
+    seed: 0
+
+  # Expected-gradient (Shapley) attribution per band and per class.
+  shap:
+    enabled: true
+    method: shap_gradient
+    split: valid
+    background_samples: 128      # baseline path draws per tile
+    test_samples: 512            # tiles explained
+    batch_size: 8
+    class_conditioned: true
+    min_class_pixels: 256
+    seed: 0
+
+  # Grad-CAM per class. Per-pixel maps are persisted in zarr, not as images.
+  grad_cam:
+    enabled: true
+    split: valid
+    samples: 48
+    batch_size: 8
+    class_conditioned: true
+    min_class_pixels: 256
+    target_layer: enc4           # deepest encoder stage
+    zarr_dirname: "gradcam.zarr"
+
+# ----------------------------------------------------------------------
+# Debug / execution mode
+# ----------------------------------------------------------------------
+debug:
+  feature_diagnostic: true
+  mode_execution: prod           # prod | debug
+
+# ----------------------------------------------------------------------
+# Non-U-Net baseline comparisons (scripts/baselines/14_..18_)
+#
+# NDSI threshold, Random Forest, DeepLabv3, SegFormer -- run against the
+# exact same glacier-level split/features/metrics as the published U-Net,
+# for the paper's "value staircase" comparison table. Entirely separate
+# from `train`/`model`/`hpo` above: 05_train_model.py never reads this
+# section, and none of these scripts ever modify the published model.
+# ----------------------------------------------------------------------
+baselines:
+  # null reuses paths.train_root (the same read-only corpus the U-Net trains
+  # on). Set explicitly only if you want a baseline to read a different copy.
+  train_root: null
+  # A GlacierSplit_WithBoundaries checkpoint used only to cross-check the
+  # reproduced split scene-by-scene before any baseline number is trusted.
+  check_checkpoint: _work/rse_sigtest/checkpoints/glacier_split/seed_0_model.pt
+
+  ndsi:
+    out_dir: _work/baselines/ndsi
+    coarse_step: 0.05
+    fine_step: 0.01
+
+  rf:
+    out_dir: _work/baselines/rf
+    mode: optuna          # "grid" (historical 24-combo manual grid, test mIoU 0.570)
+                           # | "optuna" (recommended: TPE search, wider space)
+    subsample_size: 400000
+    subsample_seed: 0
+    primary_seed: 0
+    n_seeds: 5
+    seed_start: 0
+    full_data_n_jobs: 8    # capped: a full-data fit at n_jobs=-1 previously
+                           # crashed with a MemoryError partway through a seed loop
+    search_n_jobs: -1      # safe at -1: fits are on the subsample only
+    n_trials: 20
+    optuna_seed: 0
+    optuna_storage: null   # null -> "<out_dir>/optuna_rf.db"
+
+  deeplab:
+    out_dir: _work/baselines/deeplab
+    batch_size: 64
+    num_workers: 4
+    dropout_p: 0.1
+    n_trials: 15
+    trial_epochs: 25
+    trial_patience: 5
+    trial_seed: 0
+    optuna_storage: null   # null -> "<out_dir>/optuna_deeplab.db"
+    n_seeds: 5
+    seed_start: 0
+    final_epochs: 150
+    final_patience: 15
+    lr: null               # set after hpo, or pass --lr on the CLI
+    weight_decay: null
+
+  segformer:
+    out_dir: _work/baselines/segformer
+    batch_size: 64
+    num_workers: 4
+    dropout_p: 0.1
+    n_trials: 15
+    trial_epochs: 25
+    trial_patience: 5
+    trial_seed: 0
+    optuna_storage: null   # null -> "<out_dir>/optuna_segformer.db"
+    n_seeds: 5
+    seed_start: 0
+    final_epochs: 150
+    final_patience: 15
+    lr: null
+    weight_decay: null

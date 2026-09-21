@@ -1,0 +1,73 @@
+# pip-only dependencies not well served by conda-forge, or that need a
+# specific CUDA-matched build. Install after `conda env create -f environment.yml`
+# and `conda activate glacier-fsnow-unet`.
+#
+# `pip install -r requirements-torch.txt` alone pulls a CPU-only torch wheel.
+# For training, install a CUDA build first instead, matching your GPU driver's
+# supported CUDA version (check with `nvidia-smi`), then install the rest of
+# this file:
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cu130
+#   pip install -r requirements-torch.txt
+#
+# See https://pytorch.org/get-started/locally/ for other CUDA versions.
+#
+# This file lists only packages actually imported somewhere in src/scripts/tests.
+# Nothing is pre-added speculatively: each entry below has a call site.
+
+# Deep learning
+torch>=2.0
+
+# Hyperparameter search (training/hpo.py, training/search_space.py) --
+# lazy-imported only inside the HPO code path, not required for a plain
+# single/bootstrap training run.
+optuna>=3.5
+
+# Earth Engine scene download
+earthengine-api>=0.1.370
+
+# ArcticDEM STAC/COG access (direct STAC + windowed COG reads, see
+# docs/ROADMAP.md decision #3 and docs/decisions/dem_backend.md)
+pystac-client>=0.8
+
+# Interpretation reports (interpretation/reports.py) -- self-contained
+# interactive HTML with the library inlined, so a report opens from a
+# filesystem with no server and no network fetch. Imported lazily, only when
+# an HTML report is actually requested, so the rest of the pipeline runs
+# without it.
+plotly>=5.18
+
+# torchvision (scripts/baselines/16_deeplab_baseline.py) and transformers
+# (scripts/baselines/17_segformer_baseline.py) -- the DeepLabv3 and SegFormer
+# comparison baselines. Not imported anywhere in src/training/dataset.py or
+# 05_train_model.py; listed here only because this file is the project's one
+# place for pip-only deps and both need a torch-matched build.
+#
+# torchvision: install the CUDA build matching your torch's CUDA tag from
+# PyTorch's own index (plain `pip install torchvision` pulls a CPU-only-
+# tagged wheel that still runs but skips torchvision's own compiled CUDA ops
+# such as nms/roi_align, unused by deeplabv3_resnet50 but real overhead for
+# other torchvision models):
+#
+#   pip install --no-deps torchvision==<version>+<your-cuda-tag> \
+#       --index-url https://download.pytorch.org/whl/<your-cuda-tag>
+#
+# e.g. for torch 2.13.0+cu130: torchvision==0.29.0+cu130 from
+# https://download.pytorch.org/whl/cu130 -- check `torch.__version__` and
+# that index's available versions (`pip index versions torchvision
+# --index-url ...`) before picking the exact pin, since torchvision's CUDA
+# builds trail torch's own release cadence by a version or two on a new
+# CUDA tag.
+torchvision==0.29.0+cu130
+
+# transformers: pure-Python, no CUDA build of its own -- delegates all
+# tensor ops to the torch already installed, so --no-deps + its actual
+# runtime deps (regex, tokenizers, safetensors, huggingface_hub, typer,
+# httpx, etc. -- NOT torch itself) is sufficient; there is no "GPU version"
+# to additionally install.
+transformers>=4.40
+
+# JIT compilation for the NDSI threshold grid search
+# (scripts/baselines/14_ndsi_baseline.py) -- pure CPU, no interaction with
+# the torch CUDA build.
+numba>=0.60

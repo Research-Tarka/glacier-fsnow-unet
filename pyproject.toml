@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glacier-fsnow-unet"
+version = "0.1.0"
+description = "U-Net glacier surface segmentation and snow-fraction (F_snow) pipeline"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Make `src/` importable without requiring `pip install -e .` first.
+pythonpath = ["src"]
+markers = [
+    "integration: end-to-end pipeline tests (may need network/GEE credentials)",
+    "needs_gee: requires working Google Earth Engine credentials",
+    "needs_network: requires internet access",
+]
